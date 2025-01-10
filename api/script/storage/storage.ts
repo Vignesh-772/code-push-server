@@ -102,6 +102,7 @@ export interface Package {
   rollout?: number;
   size: number;
   uploadTime: number;
+  id?:number;
 }
 
 export interface AccessKey {
@@ -158,7 +159,7 @@ export interface Storage {
   getPackageHistory(accountId: string, appId: string, deploymentId: string): Promise<Package[]>;
   updatePackageHistory(accountId: string, appId: string, deploymentId: string, history: Package[]): Promise<void>;
 
-  addBlob(blobId: string, addstream: stream.Readable, streamLength: number): Promise<string>;
+  addBlob(blobId: string, addstream: stream.Readable, streamLength: number,accountId?: string, appName?: string,deploymentName?: string,packageHash?: string): Promise<string>;
   getBlobUrl(blobId: string): Promise<string>;
   removeBlob(blobId: string): Promise<void>;
 

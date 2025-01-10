@@ -15,6 +15,7 @@ import * as bodyParser from "body-parser";
 const domain = require("express-domain-middleware");
 import * as express from "express";
 import * as q from "q";
+import { S3Storage } from "./storage/aws/aws-storage";
 
 interface Secret {
   id: string;
@@ -41,22 +42,23 @@ export function start(done: (err?: any, server?: express.Express, storage?: Stor
 
   q<void>(null)
     .then(async () => {
-      if (useJsonStorage) {
-        storage = new JsonStorage();
-      } else if (!process.env.AZURE_KEYVAULT_ACCOUNT) {
-        storage = new AzureStorage();
-      } else {
-        isKeyVaultConfigured = true;
+      storage = new S3Storage()
+      // if (useJsonStorage) {
+      //   storage = new JsonStorage();
+      // } else if (!process.env.AZURE_KEYVAULT_ACCOUNT) {
+      //   storage = new AzureStorage();
+      // } else {
+      //   isKeyVaultConfigured = true;
 
-        const credential = new DefaultAzureCredential();
+      //   const credential = new DefaultAzureCredential();
 
-        const vaultName = process.env.AZURE_KEYVAULT_ACCOUNT;
-        const url = `https://${vaultName}.vault.azure.net`;
+      //   const vaultName = process.env.AZURE_KEYVAULT_ACCOUNT;
+      //   const url = `https://${vaultName}.vault.azure.net`;
 
-        const keyvaultClient = new SecretClient(url, credential);
-        const secret = await keyvaultClient.getSecret(`storage-${process.env.AZURE_STORAGE_ACCOUNT}`);
-        storage = new AzureStorage(process.env.AZURE_STORAGE_ACCOUNT, secret);
-      }
+      //   const keyvaultClient = new SecretClient(url, credential);
+      //   const secret = await keyvaultClient.getSecret(`storage-${process.env.AZURE_STORAGE_ACCOUNT}`);
+      //   storage = new AzureStorage(process.env.AZURE_STORAGE_ACCOUNT, secret);
+      // }
     })
     .then(() => {
       const app = express();
@@ -93,7 +95,7 @@ export function start(done: (err?: any, server?: express.Express, storage?: Stor
       if (process.env.LOGGING) {
         app.use((req: express.Request, res: express.Response, next: (err?: any) => void): any => {
           console.log(); // Newline to mark new request
-          console.log(`[REST] Received ${req.method} request at ${req.originalUrl}`);
+          console.log(`[REST] Received ${req.method} request at ${req.originalUrl} body ${JSON.stringify(req.headers)}`);
           next();
         });
       }

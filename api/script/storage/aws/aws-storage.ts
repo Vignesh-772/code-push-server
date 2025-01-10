@@ -7,6 +7,7 @@ import * as shortid from "shortid";
 import * as stream from "stream";
 import * as storage from "../storage";
 import { createModels, MODELS } from "./models/model";
+import { DeleteObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 
 
 const DB_NAME = "codepushdb"
@@ -16,7 +17,9 @@ const DB_HOST = "localhost"
 
 export class S3Storage implements Storage {
     private static BUCKET_NAME = "code-push-assets"
+    private static MAX_PACKAGE_HISTORY_LENGTH = 50;
     private sequelize:Sequelize;
+    private s3Client:S3Client;
     private setupPromise: q.Promise<void>
     public constructor() {
         shortid.characters("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-");
@@ -25,7 +28,13 @@ export class S3Storage implements Storage {
             dialect: 'postgres'
           });
         this.setupPromise = this.setup()
-          
+        this.s3Client = new S3Client({
+          region: 'ap-south-1', // e.g., 'us-east-1'
+          credentials: {
+            accessKeyId: 'test',
+            secretAccessKey: 'test',
+          },
+        })
     }
 
     private setup():q.Promise<void> {
@@ -358,25 +367,21 @@ export class S3Storage implements Storage {
     }
   
     public getPackageHistoryFromDeploymentKey(deploymentKey: string): q.Promise<storage.Package[]> {
-      return q.Promise<storage.Package[]>( () => {})
+      // return q.Promise<storage.Package[]>( () => {})
       // const pointerPartitionKey: string = Keys.getShortcutDeploymentKeyPartitionKey(deploymentKey);
       // const pointerRowKey: string = Keys.getShortcutDeploymentKeyRowKey();
   
-      // return this.setupPromise
-      //   .then(() => {
-      //     return this.sequelize.models[MODELS.PACKAGE].findAll({
-      //       where: {
-      //         accountId : accountId,
-      //         appId : appId
-      //       }
-      //     })
-      //   })
-      //   .then((pointer: DeploymentKeyPointer) => {
-      //     if (!pointer) return null;
-  
-      //     return this.getPackageHistoryFromBlob(pointer.deploymentId);
-      //   })
-      //   .catch(S3Storage.azureErrorHandler);
+      return this.setupPromise
+      .then(() => {
+        return this.sequelize.models[MODELS.PACKAGE].findAll({
+          where : {
+            deploymentId: deploymentKey
+          }
+        });
+      }).then((packages) => {
+        return packages.map((value) => value.dataValues);
+      })
+      .catch(S3Storage.azureErrorHandler);
     }
   
     public getDeployment(accountId: string, appId: string, deploymentId: string): q.Promise<storage.Deployment> {
@@ -456,110 +461,116 @@ export class S3Storage implements Storage {
       deploymentId: string,
       appPackage: storage.Package
     ): q.Promise<storage.Package> {
-      return q.Promise<storage.Package>( () => {})
-      // if (!deploymentId) throw new Error("No deployment id");
-      // if (!appPackage) throw new Error("No package specified");
+      // return q.Promise<storage.Package>( () => {})
+      if (!deploymentId) throw new Error("No deployment id");
+      if (!appPackage) throw new Error("No package specified");
   
-      // appPackage = storage.clone(appPackage); // pass by value
+      appPackage = storage.clone(appPackage); // pass by value
+      appPackage.id = shortid.generate();
   
-      // let packageHistory: storage.Package[];
-      // return this.setupPromise
-      //   .then(() => {
-      //     return this.getPackageHistoryFromBlob(deploymentId);
-      //   })
-      //   .then((history: storage.Package[]) => {
-      //     packageHistory = history;
-      //     appPackage.label = this.getNextLabel(packageHistory);
-      //     return this.getAccount(accountId);
-      //   })
-      //   .then((account: storage.Account) => {
-      //     appPackage.releasedBy = account.email;
+      let packageHistory: storage.Package[];
+      return this.setupPromise
+        .then(() => {
+          return this.getPackageHistoryFromBlob(deploymentId);
+        })
+        .then((history: storage.Package[]) => {
+          packageHistory = history;
+          appPackage.label = this.getNextLabel(packageHistory);
+          return this.getAccount(accountId);
+        })
+        .then((account: storage.Account) => {
+          appPackage.releasedBy = account.email;
   
-      //     // Remove the rollout value for the last package.
-      //     const lastPackage: storage.Package =
-      //       packageHistory && packageHistory.length ? packageHistory[packageHistory.length - 1] : null;
-      //     if (lastPackage) {
-      //       lastPackage.rollout = null;
-      //     }
+          // Remove the rollout value for the last package.
+          const lastPackage: storage.Package =
+            packageHistory && packageHistory.length ? packageHistory[packageHistory.length - 1] : null;
+          if (lastPackage) {
+            lastPackage.rollout = null;
+          }
   
-      //     packageHistory.push(appPackage);
+          packageHistory.push(appPackage);
   
-      //     if (packageHistory.length > S3Storage.MAX_PACKAGE_HISTORY_LENGTH) {
-      //       packageHistory.splice(0, packageHistory.length - S3Storage.MAX_PACKAGE_HISTORY_LENGTH);
-      //     }
-  
-      //     const flatPackage: any = { id: deploymentId, package: JSON.stringify(appPackage) };
-      //     return this.mergeByAppHierarchy(flatPackage, appId, deploymentId);
-      //   })
-      //   .then(() => {
-      //     return this.uploadToHistoryBlob(deploymentId, JSON.stringify(packageHistory));
-      //   })
-      //   .then((): storage.Package => {
-      //     return appPackage;
-      //   })
-      //   .catch(S3Storage.azureErrorHandler);
+          if (packageHistory.length > S3Storage.MAX_PACKAGE_HISTORY_LENGTH) {
+            packageHistory.splice(0, packageHistory.length - S3Storage.MAX_PACKAGE_HISTORY_LENGTH);
+          }
+
+          const updateData = packageHistory.map((item) => {
+            return {
+              ...item
+            }
+          })
+            return this.sequelize.models[MODELS.PACKAGE].bulkCreate(updateData,{updateOnDuplicate: ['rollout']})
+        })
+        .then((): storage.Package => {
+          return appPackage;
+        })
+        .catch(S3Storage.azureErrorHandler);
     }
   
     public clearPackageHistory(accountId: string, appId: string, deploymentId: string): q.Promise<void> {
-      return q.Promise<void>( () => {})
-      // return this.setupPromise
-      //   .then(() => {
-      //     return this.retrieveByAppHierarchy(appId, deploymentId);
-      //   })
-      //   .then((flatDeployment: any) => {
-      //     delete flatDeployment.package;
-      //     return this.updateByAppHierarchy(flatDeployment, appId, deploymentId);
-      //   })
-      //   .then(() => {
-      //     return this.uploadToHistoryBlob(deploymentId, JSON.stringify([]));
-      //   })
-      //   .catch(S3Storage.azureErrorHandler);
+      // return q.Promise<void>( () => {})
+      return this.setupPromise
+        .then(() => {
+          return this.sequelize.models[MODELS.PACKAGE].destroy({
+            where: {
+              deploymentId : deploymentId,
+              appId: appId
+            }
+          })
+        })
+        .catch(S3Storage.azureErrorHandler);
     }
   
     public getPackageHistory(accountId: string, appId: string, deploymentId: string): q.Promise<storage.Package[]> {
-      return q.Promise<storage.Package[]>( () => {})
-      // return this.setupPromise
-      //   .then(() => {
-      //     return this.getPackageHistoryFromBlob(deploymentId);
-      //   })
-      //   .catch(S3Storage.azureErrorHandler);
+      return this.setupPromise
+        .then(() => {
+          return this.getPackageHistoryFromBlob(deploymentId);
+        })
+        .catch(S3Storage.azureErrorHandler);
     }
   
     public updatePackageHistory(accountId: string, appId: string, deploymentId: string, history: storage.Package[]): q.Promise<void> {
-      return q.Promise<void>( () => {})
       // If history is null or empty array we do not update the package history, use clearPackageHistory for that.
-      // if (!history || !history.length) {
-      //   throw storage.storageError(storage.ErrorCode.Invalid, "Cannot clear package history from an update operation");
-      // }
+      if (!history || !history.length) {
+        throw storage.storageError(storage.ErrorCode.Invalid, "Cannot clear package history from an update operation");
+      }
   
-      // return this.setupPromise
-      //   .then(() => {
-      //     const flatDeployment: any = { id: deploymentId, package: JSON.stringify(history[history.length - 1]) };
-      //     return this.mergeByAppHierarchy(flatDeployment, appId, deploymentId);
-      //   })
-      //   .then(() => {
-      //     return this.uploadToHistoryBlob(deploymentId, JSON.stringify(history));
-      //   })
-      //   .catch(S3Storage.azureErrorHandler);
+      return this.setupPromise
+        .then(() => {
+          const updateData = history.map((item) => {
+            return {
+              ...item
+            }
+          })
+          const fields  = Object.keys(updateData[0]).filter((item) => {return item !== "id"})
+            return this.sequelize.models[MODELS.PACKAGE].bulkCreate(updateData,{updateOnDuplicate: fields})
+        })
+        .catch(S3Storage.azureErrorHandler);
     }
   
-    public addBlob(blobId: string, stream: stream.Readable, streamLength: number): q.Promise<string> {
-      return q.Promise<string>( () => {})
-      // return this.setupPromise
-      //   .then(() => {
-      //     return utils.streamToBuffer(stream);
-      //   })
-      //   .then((buffer) => {
-      //     return this._blobService.getContainerClient(S3Storage.TABLE_NAME).uploadBlockBlob(blobId, buffer, buffer.byteLength);
-      //   })
-      //   .then(() => {
-      //     return blobId;
-      //   })
-      //   .catch(S3Storage.azureErrorHandler);
+    public addBlob(blobId: string, stream: stream.Readable, streamLength: number, accountId: string, appName: string,deploymentName: string,packageHash: string): q.Promise<string> {
+      const bucketPath = accountId+ "/" + appName + "/" + deploymentName + "/" + packageHash;
+      return this.setupPromise
+        .then(() => {
+          const uploadParams = {
+            Bucket: S3Storage.BUCKET_NAME,
+            Key: bucketPath,
+            Body: stream,
+          };
+      
+          const command = new PutObjectCommand(uploadParams);
+          this.s3Client.send(command)
+        })
+        .then(() => {
+          return bucketPath;
+        })
+        .catch(S3Storage.azureErrorHandler);
     }
   
     public getBlobUrl(blobId: string): q.Promise<string> {
-      return q.Promise<string>( () => {})
+      return q.Promise<string>( () => {
+        return blobId
+      })
       // return this.setupPromise
       //   .then(() => {
       //     return this._blobService.getContainerClient(S3Storage.TABLE_NAME).getBlobClient(blobId).url;
@@ -568,12 +579,17 @@ export class S3Storage implements Storage {
     }
   
     public removeBlob(blobId: string): q.Promise<void> {
-      return q.Promise<void>( () => {})
-      // return this.setupPromise
-      //   .then(() => {
-      //     return this._blobService.getContainerClient(S3Storage.TABLE_NAME).deleteBlob(blobId);
-      //   })
-      //   .catch(S3Storage.azureErrorHandler);
+      return this.setupPromise
+        .then(() => {
+          const deleteParams = {
+            Bucket: S3Storage.BUCKET_NAME,
+            Key: blobId,
+          };
+      
+          const command = new DeleteObjectCommand(deleteParams);
+          return this.s3Client.send(command)
+        })
+        .catch(S3Storage.azureErrorHandler);
     }
   
     public addAccessKey(accountId: string, accessKey: storage.AccessKey): q.Promise<string> {
@@ -596,27 +612,20 @@ export class S3Storage implements Storage {
     }
   
     public getAccessKey(accountId: string, accessKeyId: string): q.Promise<storage.AccessKey> {
-      return q.Promise<storage.AccessKey>( () => {})
-      // const partitionKey: string = Keys.getAccountPartitionKey(accountId);
-      // const rowKey: string = Keys.getAccessKeyRowKey(accountId, accessKeyId);
-      // return this.setupPromise
-      //   .then(() => {
-      //     return this.retrieveByKey(partitionKey, rowKey);
-      //   })
-      //   .catch(S3Storage.azureErrorHandler);
+      return this.setupPromise
+        .then(() => {
+          return this.sequelize.models[MODELS.ACCESSKEY].findOne({
+            where: {
+              id: accessKeyId,
+              accountId: accountId
+            }
+          })
+        })
+        .catch(S3Storage.azureErrorHandler);
     }
   
     public getAccessKeys(accountId: string): q.Promise<storage.AccessKey[]> {
       const deferred = q.defer<storage.AccessKey[]>();
-  
-      // const partitionKey: string = Keys.getAccountPartitionKey(accountId);
-      // const rowKey: string = Keys.getHierarchicalAccountRowKey(accountId);
-      // const searchKey: string = Keys.getAccessKeyRowKey(accountId);
-  
-      // // Fetch both the parent account (for error-checking purposes) and the access tokens
-      // const query = `PartitionKey eq '${partitionKey}' and (RowKey eq '${rowKey}' or (RowKey gt '${searchKey}' and RowKey lt '${searchKey}~'))`;
-      // const options = { queryOptions: { filter: query } };
-  
       this.setupPromise.then(() => {
         this.sequelize.models[MODELS.ACCESSKEY].findAll({
           where: {
@@ -635,137 +644,45 @@ export class S3Storage implements Storage {
     }
   
     public removeAccessKey(accountId: string, accessKeyId: string): q.Promise<void> {
-      return q.Promise<void>( () => {})
-      // return this.setupPromise
-      //   .then(() => {
-      //     return this.getAccessKey(accountId, accessKeyId);
-      //   })
-      //   .then((accessKey) => {
-      //     const partitionKey: string = Keys.getAccountPartitionKey(accountId);
-      //     const rowKey: string = Keys.getAccessKeyRowKey(accountId, accessKeyId);
-      //     const shortcutAccessKeyPartitionKey: string = Keys.getShortcutAccessKeyPartitionKey(accessKey.name, false);
-  
-      //     return q.all<any>([
-      //       this._tableClient.deleteEntity(partitionKey, rowKey),
-      //       this._tableClient.deleteEntity(shortcutAccessKeyPartitionKey, ""),
-      //     ]);
-      //   })
-      //   .catch(S3Storage.azureErrorHandler);
+      return this.setupPromise
+        .then(() => {
+          return this.sequelize.models[MODELS.ACCESSKEY].destroy({
+            where: {
+              id: accessKeyId,
+              accountId: accountId
+            }
+          })
+        })
+        .catch(S3Storage.azureErrorHandler);
     }
   
     public updateAccessKey(accountId: string, accessKey: storage.AccessKey): q.Promise<void> {
-      return  q.Promise<void>( () => {})
-      // if (!accessKey) {
-      //   throw new Error("No access key");
-      // }
+      if (!accessKey) {
+        throw new Error("No access key");
+      }
   
-      // if (!accessKey.id) {
-      //   throw new Error("No access key id");
-      // }
+      if (!accessKey.id) {
+        throw new Error("No access key id");
+      }
   
-      // const partitionKey: string = Keys.getAccountPartitionKey(accountId);
-      // const rowKey: string = Keys.getAccessKeyRowKey(accountId, accessKey.id);
-  
-      // return this.setupPromise
-      //   .then(() => {
-      //     const entity: any = this.wrap(accessKey, partitionKey, rowKey);
-      //     return this._tableClient.updateEntity(entity);
-      //   })
-      //   .then(() => {
-      //     const newAccessKeyPointer: AccessKeyPointer = {
-      //       accountId,
-      //       expires: accessKey.expires,
-      //     };
-  
-      //     const accessKeyPointerEntity: any = this.wrap(
-      //       newAccessKeyPointer,
-      //       Keys.getShortcutAccessKeyPartitionKey(accessKey.name, false),
-      //       ""
-      //     );
-      //     return this._tableClient.updateEntity(accessKeyPointerEntity);
-      //   })
-      //   .catch(S3Storage.azureErrorHandler);
+      return this.setupPromise
+        .then(() => {
+          return this.sequelize.models[MODELS.ACCESSKEY].update({
+            ...accessKey
+          },{
+            where: {
+              id : accountId,
+              accessKey: accessKey.id
+            }
+          })
+        })
+        .catch(S3Storage.azureErrorHandler);
     }
   
     // No-op for safety, so that we don't drop the wrong db, pending a cleaner solution for removing test data.
     public dropAll(): q.Promise<void> {
       return q(<void>null);
     }
-  
-    // private setup(accountName?: string, accountKey?: string): q.Promise<void> {
-    //   let tableServiceClient: TableServiceClient;
-    //   let tableClient: TableClient;
-    //   let blobServiceClient: BlobServiceClient;
-  
-    //   if (process.env.EMULATED) {
-    //     const devConnectionString = "UseDevelopmentStorage=true";
-  
-    //     tableServiceClient = TableServiceClient.fromConnectionString(devConnectionString);
-    //     tableClient = TableClient.fromConnectionString(devConnectionString, S3Storage.TABLE_NAME);
-    //     blobServiceClient = BlobServiceClient.fromConnectionString(devConnectionString);
-    //   } else {
-    //     if ((!accountName && !process.env.AZURE_STORAGE_ACCOUNT) || (!accountKey && !process.env.AZURE_STORAGE_ACCESS_KEY)) {
-    //       throw new Error("Azure credentials not set");
-    //     }
-  
-    //     const _accountName = accountName ?? process.env.AZURE_STORAGE_ACCOUNT;
-    //     const _accountKey = accountKey ?? process.env.AZURE_STORAGE_ACCESS_KEY;
-  
-    //     const tableStorageCredential = new AzureNamedKeyCredential(_accountName, _accountKey);
-    //     const blobStorageCredential = new StorageSharedKeyCredential(_accountName, _accountKey);
-  
-    //     const tableServiceUrl = `https://${_accountName}.table.core.windows.net`;
-    //     const blobServiceUrl = `https://${_accountName}.blob.core.windows.net`;
-  
-    //     tableServiceClient = new TableServiceClient(tableServiceUrl, tableStorageCredential, {
-    //       retryOptions: {
-    //         maxRetries: 3,
-    //         maxRetryDelayInMs: 2000,
-    //         retryDelayInMs: 500,
-    //       },
-    //     });
-    //     tableClient = new TableClient(tableServiceUrl, S3Storage.TABLE_NAME, tableStorageCredential);
-    //     blobServiceClient = new BlobServiceClient(blobServiceUrl, blobStorageCredential, {
-    //       retryOptions: {
-    //         maxTries: 4,
-    //         maxRetryDelayInMs: 2000,
-    //         retryDelayInMs: 500,
-    //       },
-    //     });
-    //   }
-  
-    //   const tableHealthEntity: any = this.wrap({ health: "health" }, /*partitionKey=*/ "health", /*rowKey=*/ "health");
-  
-    //   return q
-    //     .all([
-    //       tableServiceClient.createTable(S3Storage.TABLE_NAME),
-    //       blobServiceClient.createContainer(S3Storage.TABLE_NAME, { access: "blob" }),
-    //       blobServiceClient.createContainer(S3Storage.HISTORY_BLOB_CONTAINER_NAME),
-    //     ])
-    //     .then(() => {
-    //       return q.all<any>([
-    //         tableClient.createEntity(tableHealthEntity),
-    //         blobServiceClient.getContainerClient(S3Storage.TABLE_NAME).uploadBlockBlob("health", "health", "health".length),
-    //         blobServiceClient
-    //           .getContainerClient(S3Storage.HISTORY_BLOB_CONTAINER_NAME)
-    //           .uploadBlockBlob("health", "health", "health".length),
-    //       ]);
-    //     })
-    //     .then(() => {
-    //       // Do not assign these unless everything completes successfully, as this will cause in-flight promise chains to start using
-    //       // the initialized services
-    //       this._tableClient = tableClient;
-    //       this._blobService = blobServiceClient;
-    //     })
-    //     .catch((error) => {
-    //       if (error.code == "ContainerAlreadyExists") {
-    //         this._tableClient = tableClient;
-    //         this._blobService = blobServiceClient;
-    //       } else {
-    //         throw error;
-    //       }
-    //     });
-    // }
 
     private async getCollabrators(app:App,accountId) {
       const collabModel = await this.sequelize.models[MODELS.COLLABORATOR].findAll({where : {appId: app.id}})
@@ -926,6 +843,31 @@ export class S3Storage implements Storage {
     flatDeployment.package = flatDeployment.package ? JSON.parse(flatDeployment.package) : null;
 
     return flatDeployment;
+  }
+
+  private getPackageHistoryFromBlob(deploymentId: string): q.Promise<storage.Package[]> {
+    return this.setupPromise
+    .then(() => {
+      return this.sequelize.models[MODELS.PACKAGE].findAll({
+        where : {
+          deploymentId: deploymentId
+        }
+      });
+    }).then((packages) => {
+      if (!packages) throw new Error("Package Not Found");
+      return packages.map((value) => value.dataValues);
+    })
+    .catch(S3Storage.azureErrorHandler);
+  }
+
+  private getNextLabel(packageHistory: storage.Package[]): string {
+    if (packageHistory.length === 0) {
+      return "v1";
+    }
+
+    const lastLabel: string = packageHistory[packageHistory.length - 1].label;
+    const lastVersion: number = parseInt(lastLabel.substring(1)); // Trim 'v' from the front
+    return "v" + (lastVersion + 1);
   }
 }
 

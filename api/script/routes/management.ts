@@ -839,7 +839,7 @@ export function getManagementRouter(config: ManagementConfig): Router {
             );
           }
 
-          return storage.addBlob(security.generateSecureKey(accountId), fs.createReadStream(filePath), stats.size);
+          return storage.addBlob(security.generateSecureKey(accountId), fs.createReadStream(filePath), stats.size, accountId, appName,deploymentName,packageHash);
         })
         .then((blobId: string) => storage.getBlobUrl(blobId))
         .then((blobUrl: string) => {
@@ -850,8 +850,9 @@ export function getManagementRouter(config: ManagementConfig): Router {
           if (newManifest) {
             const json: string = newManifest.serialize();
             const readStream: stream.Readable = streamifier.createReadStream(json);
-
-            return storage.addBlob(security.generateSecureKey(accountId), readStream, json.length);
+            return newManifest.computePackageHash().then((packageHash) => {
+              return storage.addBlob(security.generateSecureKey(accountId), readStream, json.length,accountId, appName,deploymentName,packageHash);
+              })
           }
 
           return q(<string>null);

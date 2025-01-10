@@ -50,6 +50,8 @@ function createResponseUsingStorage(
     label: String(req.query.label),
   };
 
+  console.log(" updateRequest ->", JSON.stringify(updateRequest))
+
   let originalAppVersion: string;
 
   // Make an exception to allow plain integer numbers e.g. "1", "2" etc.
@@ -147,7 +149,7 @@ export function getAcquisitionRouter(config: AcquisitionConfig): express.Router 
       const url: string = getUrlKey(req.originalUrl);
       let fromCache: boolean = true;
       let redisError: Error;
-
+      console.log("Key -> ", key, url)
       redisManager
         .getCachedResponse(key, url)
         .catch((error: Error) => {

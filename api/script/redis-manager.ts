@@ -80,6 +80,7 @@ class PromisifiedRedisClient {
     for (const functionName in this) {
       if (this.hasOwnProperty(functionName) && (<any>this)[functionName] === null) {
         const originalFunction = (<any>redisClient)[functionName];
+        console.log("originalFunction => ", functionName, originalFunction)
         assert(!!originalFunction, "Binding a function that does not exist: " + functionName);
         (<any>this)[functionName] = q.nbind(originalFunction, redisClient);
       }
@@ -102,14 +103,13 @@ export class RedisManager {
       const redisConfig = {
         host: process.env.REDIS_HOST,
         port: process.env.REDIS_PORT,
-        auth_pass: process.env.REDIS_KEY,
         tls: {
           // Note: Node defaults CA's to those trusted by Mozilla
           rejectUnauthorized: true,
         },
       };
-      this._opsClient = redis.createClient(redisConfig);
-      this._metricsClient = redis.createClient(redisConfig);
+      this._opsClient = redis.createClient(redisConfig.port,redisConfig.host,redisConfig);
+      this._metricsClient = redis.createClient(redisConfig.port,redisConfig.host,redisConfig);
       this._opsClient.on("error", (err: Error) => {
         console.error(err);
       });
@@ -117,7 +117,7 @@ export class RedisManager {
       this._metricsClient.on("error", (err: Error) => {
         console.error(err);
       });
-
+      this._opsClient.set("health", "health")
       this._promisifiedOpsClient = new PromisifiedRedisClient(this._opsClient);
       this._promisifiedMetricsClient = new PromisifiedRedisClient(this._metricsClient);
       this._setupMetricsClientPromise = this._promisifiedMetricsClient
@@ -151,6 +151,8 @@ export class RedisManager {
       return q<CacheableResponse>(null);
     }
 
+    console.log("expiryKey -> ", expiryKey, url)
+    this._promisifiedOpsClient.ping()
     return this._promisifiedOpsClient.hget(expiryKey, url).then((serializedResponse: string): Promise<CacheableResponse> => {
       if (serializedResponse) {
         const response = <CacheableResponse>JSON.parse(serializedResponse);
@@ -158,7 +160,19 @@ export class RedisManager {
       } else {
         return q<CacheableResponse>(null);
       }
-    });
+    }); 
+    // .then((serializedResponse: string): Promise<CacheableResponse> => {
+    //   console.log("_promisifiedOpsClient -> ", serializedResponse)
+    //   if (serializedResponse) {
+    //     const response = <CacheableResponse>JSON.parse(serializedResponse);
+    //     return q<CacheableResponse>(response);
+    //   } else {
+    //     return q<CacheableResponse>(null);
+    //   }
+    // }).catch((err) => {
+    //   console.log("expiryKey err -> ", err)
+    //   return q<CacheableResponse>(null);
+    // });
   }
 
   /**
