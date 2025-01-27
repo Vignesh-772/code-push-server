@@ -58,31 +58,41 @@ export module Utilities {
 
 class PromisifiedRedisClient {
   // An incomplete set of promisified versions of the original redis methods
+  private redisClient:redis.RedisClientType = null
   public del: (...key: string[]) => Promise<number> = null;
   public execBatch: (redisBatchClient: any) => Promise<any[]> = null;
   public exists: (...key: string[]) => Promise<number> = null;
   public expire: (key: string, seconds: number) => Promise<number> = null;
-  public hdel: (key: string, field: string) => Promise<number> = null;
-  public hget: (key: string, field: string) => Promise<string> = null;
-  public hgetall: (key: string) => Promise<any> = null;
-  public hincrby: (key: string, field: string, value: number) => Promise<number> = null;
-  public hset: (key: string, field: string, value: string) => Promise<number> = null;
+  public hDel: (key: string, field: string) => Promise<number> = null;
+  public hGet: (key: string, field: string) => Promise<string> = null;
+  public hGetAll: (key: string) => Promise<any> = null;
+  public hIncrBy: (key: string, field: string, value: number) => Promise<number> = null;
+  public hSet: (key: string, field: string, value: string) => Promise<number> = null;
   public ping: (payload?: any) => Promise<any> = null;
   public quit: () => Promise<void> = null;
   public select: (databaseNumber: number) => Promise<void> = null;
   public set: (key: string, value: string) => Promise<void> = null;
 
-  constructor(redisClient: redis.RedisClient) {
+  constructor(redisClient: redis.RedisClientType) {
+    this.redisClient = redisClient;
     this.execBatch = (redisBatchClient: any) => {
       return q.ninvoke<any[]>(redisBatchClient, "exec");
     };
 
     for (const functionName in this) {
-      if (this.hasOwnProperty(functionName) && (<any>this)[functionName] === null) {
-        const originalFunction = (<any>redisClient)[functionName];
-        console.log("originalFunction => ", functionName, originalFunction)
-        assert(!!originalFunction, "Binding a function that does not exist: " + functionName);
-        (<any>this)[functionName] = q.nbind(originalFunction, redisClient);
+      if (functionName !== "redisClient" && functionName !== "select") {
+        if (this.hasOwnProperty(functionName) && (<any>this)[functionName] === null) {
+          const originalFunction = (<any>redisClient)[functionName];
+          console.log("originalFunction => ", functionName, originalFunction)
+          assert(!!originalFunction, "Binding a function that does not exist: " + functionName);
+          (<any>this)[functionName] = () => {
+          return (<any>redisClient)[functionName].apply(null,...arguments);
+        }
+        }
+      } else {
+        this.select = (databaseNumber) => {
+          return q.resolve(this.redisClient.select(databaseNumber)) 
+        }
       }
     }
   }
@@ -92,24 +102,23 @@ export class RedisManager {
   private static DEFAULT_EXPIRY: number = 3600; // one hour, specified in seconds
   private static METRICS_DB: number = 1;
 
-  private _opsClient: redis.RedisClient;
+  private _opsClient: redis.RedisClientType;
   private _promisifiedOpsClient: PromisifiedRedisClient;
-  private _metricsClient: redis.RedisClient;
+  private _metricsClient: redis.RedisClientType;
   private _promisifiedMetricsClient: PromisifiedRedisClient;
   private _setupMetricsClientPromise: Promise<void>;
 
   constructor() {
     if (process.env.REDIS_HOST && process.env.REDIS_PORT) {
       const redisConfig = {
-        host: process.env.REDIS_HOST,
-        port: process.env.REDIS_PORT,
-        tls: {
-          // Note: Node defaults CA's to those trusted by Mozilla
-          rejectUnauthorized: true,
-        },
+        socket: {
+          tls:true,
+          host: process.env.REDIS_HOST, // or your Redis server's IP
+    port: Number(process.env.REDIS_PORT),
+        }
       };
-      this._opsClient = redis.createClient(redisConfig.port,redisConfig.host,redisConfig);
-      this._metricsClient = redis.createClient(redisConfig.port,redisConfig.host,redisConfig);
+      this._opsClient = redis.createClient();
+      this._metricsClient = redis.createClient();
       this._opsClient.on("error", (err: Error) => {
         console.error(err);
       });
@@ -117,12 +126,17 @@ export class RedisManager {
       this._metricsClient.on("error", (err: Error) => {
         console.error(err);
       });
-      this._opsClient.set("health", "health")
-      this._promisifiedOpsClient = new PromisifiedRedisClient(this._opsClient);
-      this._promisifiedMetricsClient = new PromisifiedRedisClient(this._metricsClient);
-      this._setupMetricsClientPromise = this._promisifiedMetricsClient
-        .select(RedisManager.METRICS_DB)
-        .then(() => this._promisifiedMetricsClient.set("health", "health"));
+      this._opsClient.connect().then(() => {
+        this._metricsClient.connect().then(() => {
+          this._opsClient.set("health", "health")
+          this._promisifiedOpsClient = new PromisifiedRedisClient(this._opsClient);
+          this._promisifiedMetricsClient = new PromisifiedRedisClient(this._metricsClient);
+          this._setupMetricsClientPromise = this._promisifiedMetricsClient
+            .select(RedisManager.METRICS_DB)
+            .then(() => this._promisifiedMetricsClient.set("health", "health"));
+        })
+      })
+
     } else {
       console.warn("No REDIS_HOST or REDIS_PORT environment variable configured.");
     }
@@ -137,7 +151,16 @@ export class RedisManager {
       return q.reject<void>("Redis manager is not enabled");
     }
 
-    return q.all([this._promisifiedOpsClient.ping(), this._promisifiedMetricsClient.ping()]).spread<void>(() => {});
+    return this._promisifiedOpsClient.ping("Hello").then(() => {
+      console.log("Hello")
+      this._promisifiedMetricsClient.ping("how are you").then(() => {
+        console.log("Hello")
+      })
+    }).catch(() => {
+      console.log("catch Hello")
+    })
+
+    // return q.all([this._promisifiedOpsClient.ping("Hello"), ]).spread<void>(() => {});
   }
 
   /**
@@ -153,7 +176,7 @@ export class RedisManager {
 
     console.log("expiryKey -> ", expiryKey, url)
     this._promisifiedOpsClient.ping()
-    return this._promisifiedOpsClient.hget(expiryKey, url).then((serializedResponse: string): Promise<CacheableResponse> => {
+    return this._promisifiedOpsClient.hGet(expiryKey, url).then((serializedResponse: string): Promise<CacheableResponse> => {
       if (serializedResponse) {
         const response = <CacheableResponse>JSON.parse(serializedResponse);
         return q<CacheableResponse>(response);
@@ -193,7 +216,7 @@ export class RedisManager {
       .exists(expiryKey)
       .then((isExisting: number) => {
         isNewKey = !isExisting;
-        return this._promisifiedOpsClient.hset(expiryKey, url, serializedResponse);
+        return this._promisifiedOpsClient.hSet(expiryKey, url, serializedResponse);
       })
       .then(() => {
         if (isNewKey) {
@@ -213,7 +236,7 @@ export class RedisManager {
     const hash: string = Utilities.getDeploymentKeyLabelsHash(deploymentKey);
     const field: string = Utilities.getLabelStatusField(label, status);
 
-    return this._setupMetricsClientPromise.then(() => this._promisifiedMetricsClient.hincrby(hash, field, 1)).then(() => {});
+    return this._setupMetricsClientPromise.then(() => this._promisifiedMetricsClient.hIncrBy(hash, field, 1)).then(() => {});
   }
 
   public clearMetricsForDeploymentKey(deploymentKey: string): Promise<void> {
@@ -239,7 +262,7 @@ export class RedisManager {
     }
 
     return this._setupMetricsClientPromise
-      .then(() => this._promisifiedMetricsClient.hgetall(Utilities.getDeploymentKeyLabelsHash(deploymentKey)))
+      .then(() => this._promisifiedMetricsClient.hGetAll(Utilities.getDeploymentKeyLabelsHash(deploymentKey)))
       .then((metrics) => {
         // Redis returns numerical values as strings, handle parsing here.
         if (metrics) {
@@ -287,7 +310,7 @@ export class RedisManager {
     return this._setupMetricsClientPromise
       .then(() => {
         const deploymentKeyClientsHash: string = Utilities.getDeploymentKeyClientsHash(deploymentKey);
-        return this._promisifiedMetricsClient.hdel(deploymentKeyClientsHash, clientUniqueId);
+        return this._promisifiedMetricsClient.hDel(deploymentKeyClientsHash, clientUniqueId);
       })
       .then(() => {});
   }
@@ -316,7 +339,7 @@ export class RedisManager {
     }
 
     return this._setupMetricsClientPromise.then(() =>
-      this._promisifiedMetricsClient.hget(Utilities.getDeploymentKeyClientsHash(deploymentKey), clientUniqueId)
+      this._promisifiedMetricsClient.hGet(Utilities.getDeploymentKeyClientsHash(deploymentKey), clientUniqueId)
     );
   }
 

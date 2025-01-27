@@ -176,6 +176,7 @@ export class PassportAuthentication {
     });
 
     router.get("/auth/register", this._cookieSessionMiddleware, (req: Request, res: Response): any => {
+      console.log("Hello")
       req.session["hostname"] = req.query.hostname;
       res.render("authenticate", { action: "register", isGitHubAuthenticationEnabled, isMicrosoftAuthenticationEnabled });
     });

@@ -7,7 +7,9 @@ import * as shortid from "shortid";
 import * as stream from "stream";
 import * as storage from "../storage";
 import { createModels, MODELS } from "./models/model";
-import { DeleteObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { DeleteObjectCommand, HeadBucketCommand, S3Client } from "@aws-sdk/client-s3";
+import { Upload } from "@aws-sdk/lib-storage";
+
 
 
 const DB_NAME = "codepushdb"
@@ -27,22 +29,30 @@ export class S3Storage implements Storage {
             host: process.env["DB_HOST"] || DB_HOST,
             dialect: 'postgres'
           });
-        this.setupPromise = this.setup()
-        this.s3Client = new S3Client({
-          region: 'ap-south-1', // e.g., 'us-east-1'
-          credentials: {
-            accessKeyId: 'test',
-            secretAccessKey: 'test',
-          },
-        })
+          this.s3Client = new S3Client({
+            region: 'ap-south-1',
+            forcePathStyle: true,
+            endpoint: 'http://localhost:4566',
+            credentials: {
+              accessKeyId: 'test',
+              secretAccessKey: 'test',
+            },
+          })
+          this.setupPromise = this.setup()
     }
 
     private setup():q.Promise<void> {
       return q.all([
           this.sequelize.authenticate(),
-          createModels(this.sequelize)
+          createModels(this.sequelize),
+          this.s3Client.send(new HeadBucketCommand({
+            Bucket: S3Storage.BUCKET_NAME
+          }))
       ]).then(() => {
-        this.sequelize.sync()
+        console.log("q.all")
+        return this.sequelize.sync().then(() => {
+          console.log("this.sequelize")
+        })
       })
     }
 
@@ -55,9 +65,11 @@ export class S3Storage implements Storage {
       return q.Promise<void>((resolve, reject) => {
         this.setupPromise
           .then(() => {
+            console.log("checkHealth")
             return q.all([this.sequelize.authenticate()]);
           })
           .then(() => {
+            console.log("checkHealth")
             resolve();
           })
           .catch(reject);
@@ -84,8 +96,8 @@ export class S3Storage implements Storage {
         .then(() => {
           return this.sequelize.models[MODELS.ACCOUNT].findByPk(accountId)
         })
-        .then((acoount) => {
-          return acoount.dataValues
+        .then((account) => {
+          return account.dataValues
         })
         .catch(S3Storage.azureErrorHandler);
     }
@@ -138,24 +150,26 @@ export class S3Storage implements Storage {
         .then(() => {
           return this.getAccount(accountId);
         })
-        .then(async (account: storage.Account) => {
+        .then((account: storage.Account) => {
           const collabMap = { email: account.email, accountId: accountId, permission: storage.Permissions.Owner, appId :app.id };
-          await this.addCollaboratorWithMap(account.id,app,account.email,collabMap)
-          const updatedApp = {
-            ...app
-            ,"accountId": accountId
-          }
-          if (updatedApp.collaborators) {
-            delete updatedApp.collaborators;
-          }
-          const addApp = this.sequelize.models[MODELS.APPS].findOrCreate({
-            where : { name: app.name},
-            defaults : updatedApp
+          return this.addCollaboratorWithMap(account.id,app,account.email,collabMap).then(([model,_]) => {
+            app.collaborators = model.dataValues
+            const updatedApp = {
+              ...app
+              ,"accountId": accountId
+            }
+            if (updatedApp.collaborators) {
+              delete updatedApp.collaborators;
+            }
+            const addApp = this.sequelize.models[MODELS.APPS].findOrCreate({
+              where : { name: app.name},
+              defaults : updatedApp
+            })
+            return addApp
           })
-          return addApp
         })
         .then(() => {
-          return app;
+          return this.getCollabrators(app,accountId)
         })
         .catch(S3Storage.azureErrorHandler);
     }
@@ -552,14 +566,21 @@ export class S3Storage implements Storage {
       const bucketPath = accountId+ "/" + appName + "/" + deploymentName + "/" + packageHash;
       return this.setupPromise
         .then(() => {
-          const uploadParams = {
-            Bucket: S3Storage.BUCKET_NAME,
-            Key: bucketPath,
-            Body: stream,
-          };
+          
+          const uploadParams ={
+            client: this.s3Client,
+            params: {
+              Bucket: S3Storage.BUCKET_NAME,
+              Key: bucketPath,
+              Body: stream,
+            },
+            // Optional: Tweak concurrency and part size
+            queueSize: 4, // Number of concurrent uploads
+            partSize: 5 * 1024 * 1024, // Minimum 5MB
+          }
       
-          const command = new PutObjectCommand(uploadParams);
-          this.s3Client.send(command)
+          const upload = new Upload(uploadParams);
+          return upload.done()
         })
         .then(() => {
           return bucketPath;
@@ -568,9 +589,7 @@ export class S3Storage implements Storage {
     }
   
     public getBlobUrl(blobId: string): q.Promise<string> {
-      return q.Promise<string>( () => {
-        return blobId
-      })
+      return q.resolve(blobId)
       // return this.setupPromise
       //   .then(() => {
       //     return this._blobService.getContainerClient(S3Storage.TABLE_NAME).getBlobClient(blobId).url;
@@ -816,7 +835,7 @@ export class S3Storage implements Storage {
     email: string,
     collabProperties: any
     ) {
-      this.sequelize.models[MODELS.COLLABORATOR].findOrCreate({
+      return this.sequelize.models[MODELS.COLLABORATOR].findOrCreate({
         where : { appId: app.id , email: email, accountId: accountId},
         defaults: {...collabProperties, email :email, accountId: accountId, appId: app.id}})
   }

@@ -229,6 +229,7 @@ export function toStorageAccessKey(restAccessKey: AccessKey): Storage.AccessKey 
 }
 
 export function toStorageApp(restApp: App, createdTime: number): Storage.App {
+  console.log("toStorageApp -> ", restApp)
   const storageApp: Storage.App = {
     createdTime: createdTime,
     name: restApp.name,
